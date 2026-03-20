@@ -1,0 +1,526 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CustomerType {
+  REGULAR
+  WALK_IN
+}
+
+enum DocumentTaxMode {
+  TAX
+  NON_TAX
+}
+
+enum UnitType {
+  PRIMARY
+  SECONDARY
+}
+
+enum ItemType {
+  PRODUCT
+  SERVICE
+}
+
+enum ItemStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum PriceSource {
+  LAST_QUOTED
+  LAST_INVENTORY_UPDATE
+  ITEM_DEFAULT
+  DERIVED_FROM_PRIMARY
+  MANUAL
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  WALLET
+  CHEQUE
+}
+
+enum ReturnMethod {
+  CASH_REFUND
+  EXCHANGE
+}
+
+enum StockTransactionType {
+  OPENING
+  PURCHASE
+  PURCHASE_RETURN
+  SALE
+  SALE_RETURN
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  DAMAGE
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+model Business {
+  id                  String   @id @default(cuid())
+  name                String
+  legalName           String?
+  ownerName           String?
+  email               String?
+  phone               String?
+  currency            String   @default("LKR")
+  timezone            String   @default("Asia/Colombo")
+  taxInvoicePrefix    String   @default("INV")
+  nonTaxInvoicePrefix String   @default("NINV")
+  taxOrderPrefix      String   @default("ORD")
+  nonTaxOrderPrefix   String   @default("NORD")
+  quotationPrefix     String   @default("QT")
+  purchasePrefix      String   @default("PUR")
+  salesReturnPrefix   String   @default("RET")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  users               User[]
+  roles               Role[]
+  customers           Customer[]
+  suppliers           Supplier[]
+  units               Unit[]
+  categories          Category[]
+  brands              Brand[]
+  taxRates            TaxRate[]
+  items               Item[]
+  settings            BusinessSettings[]
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  businessId  String
+  name        String
+  description String?
+  permissions String[]
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  users       User[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  businessId   String
+  fullName     String
+  email        String?  @unique
+  phone        String?
+  passwordHash String
+  roleId       String
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  role         Role     @relation(fields: [roleId], references: [id])
+  refreshTokens RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+}
+
+model Customer {
+  id             String       @id @default(cuid())
+  businessId     String
+  name           String
+  customerType   CustomerType @default(REGULAR)
+  phone          String?
+  email          String?
+  currentBalance Decimal      @default(0)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  business       Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model Supplier {
+  id             String   @id @default(cuid())
+  businessId     String
+  name           String
+  phone          String?
+  email          String?
+  currentBalance Decimal  @default(0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model Unit {
+  id               String   @id @default(cuid())
+  businessId       String
+  name             String
+  symbol           String
+  decimalPrecision Int      @default(0)
+  isActive         Boolean  @default(true)
+  business         Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model Category {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model Brand {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model TaxRate {
+  id          String   @id @default(cuid())
+  businessId  String
+  name        String
+  ratePercent Decimal
+  code        String?
+  isActive    Boolean  @default(true)
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model Item {
+  id                           String     @id @default(cuid())
+  businessId                   String
+  type                         ItemType
+  status                       ItemStatus @default(ACTIVE)
+  name                         String
+  code                         String?
+  sku                          String?
+  barcode                      String?
+  categoryId                   String?
+  brandId                      String?
+  trackInventory               Boolean    @default(true)
+  allowNegativeStock           Boolean    @default(false)
+  primaryUnitId                String?
+  secondaryUnitId              String?
+  secondaryToPrimaryFactor     Decimal?
+  allowSalesInSecondaryUnit    Boolean    @default(false)
+  allowPurchaseInSecondaryUnit Boolean    @default(false)
+  openingStockPrimary          Decimal?   @default(0)
+  currentStockPrimary          Decimal    @default(0)
+  reorderLevelPrimary          Decimal?
+  salesPricePrimary            Decimal?
+  purchasePricePrimary         Decimal?
+  taxable                      Boolean    @default(true)
+  defaultTaxRateId             String?
+  createdAt                    DateTime   @default(now())
+  updatedAt                    DateTime   @updatedAt
+  business                     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model ItemPriceHistory {
+  id           String      @id @default(cuid())
+  businessId   String
+  itemId       String
+  sourceType   String
+  sourceId     String
+  unitType     UnitType
+  unitId       String
+  price        Decimal
+  discountAmount Decimal?
+  taxInclusive Boolean?
+  createdAt    DateTime    @default(now())
+}
+
+model StockTransaction {
+  id                 String               @id @default(cuid())
+  businessId         String
+  itemId             String
+  transactionType    StockTransactionType
+  referenceType      String
+  referenceId        String
+  quantityPrimaryIn  Decimal              @default(0)
+  quantityPrimaryOut Decimal              @default(0)
+  enteredQuantity    Decimal
+  enteredUnitType    UnitType
+  enteredUnitId      String?
+  conversionFactor   Decimal?
+  unitCost           Decimal?
+  lineValue          Decimal?
+  note               String?
+  transactionDate    DateTime             @default(now())
+  createdBy          String
+}
+
+model SalesInvoice {
+  id              String          @id @default(cuid())
+  businessId      String
+  invoiceNo       String
+  invoiceSeries   String
+  documentTaxMode DocumentTaxMode
+  customerId      String
+  invoiceDate     DateTime        @default(now())
+  subtotal        Decimal
+  discountAmount  Decimal         @default(0)
+  taxAmount       Decimal         @default(0)
+  grandTotal      Decimal
+  amountReceived  Decimal         @default(0)
+  balanceDue      Decimal         @default(0)
+  createdBy       String
+  createdAt       DateTime        @default(now())
+}
+
+model SalesInvoiceLine {
+  id             String      @id @default(cuid())
+  salesInvoiceId String
+  itemId         String
+  enteredQuantity Decimal
+  unitType       UnitType
+  unitId         String
+  conversionFactor Decimal?
+  quantityPrimary Decimal
+  unitPrice      Decimal
+  priceSource    PriceSource
+  discountAmount Decimal     @default(0)
+  taxRate        Decimal     @default(0)
+  taxAmount      Decimal     @default(0)
+  lineTotal      Decimal
+}
+
+model SalesOrder {
+  id              String          @id @default(cuid())
+  businessId      String
+  orderNo         String
+  orderSeries     String
+  documentTaxMode DocumentTaxMode
+  customerId      String
+  orderDate       DateTime        @default(now())
+  subtotal        Decimal
+  discountAmount  Decimal         @default(0)
+  taxAmount       Decimal         @default(0)
+  grandTotal      Decimal
+  createdBy       String
+  createdAt       DateTime        @default(now())
+}
+
+model SalesOrderLine {
+  id              String    @id @default(cuid())
+  salesOrderId    String
+  itemId          String
+  enteredQuantity Decimal
+  unitType        UnitType
+  unitId          String
+  conversionFactor Decimal?
+  quantityPrimary Decimal
+  unitPrice       Decimal
+  priceSource     PriceSource
+  discountAmount  Decimal   @default(0)
+  taxRate         Decimal   @default(0)
+  taxAmount       Decimal   @default(0)
+  lineTotal       Decimal
+}
+
+model Quotation {
+  id             String   @id @default(cuid())
+  businessId     String
+  quotationNo    String
+  customerId     String
+  quotationDate  DateTime @default(now())
+  subtotal       Decimal
+  discountAmount Decimal  @default(0)
+  taxAmount      Decimal  @default(0)
+  grandTotal     Decimal
+  createdBy      String
+  createdAt      DateTime @default(now())
+}
+
+model QuotationLine {
+  id              String    @id @default(cuid())
+  quotationId     String
+  itemId          String
+  enteredQuantity Decimal
+  unitType        UnitType
+  unitId          String
+  conversionFactor Decimal?
+  quantityPrimary Decimal
+  unitPrice       Decimal
+  priceSource     PriceSource
+  discountAmount  Decimal   @default(0)
+  taxRate         Decimal   @default(0)
+  taxAmount       Decimal   @default(0)
+  lineTotal       Decimal
+}
+
+model Purchase {
+  id             String   @id @default(cuid())
+  businessId     String
+  purchaseNo     String
+  supplierId     String
+  purchaseDate   DateTime @default(now())
+  subtotal       Decimal
+  discountAmount Decimal  @default(0)
+  taxAmount      Decimal  @default(0)
+  grandTotal     Decimal
+  amountPaid     Decimal  @default(0)
+  balancePayable Decimal  @default(0)
+  createdBy      String
+  createdAt      DateTime @default(now())
+}
+
+model PurchaseLine {
+  id              String    @id @default(cuid())
+  purchaseId      String
+  itemId          String
+  enteredQuantity Decimal
+  unitType        UnitType
+  unitId          String
+  conversionFactor Decimal?
+  quantityPrimary Decimal
+  unitCost        Decimal
+  taxRate         Decimal   @default(0)
+  taxAmount       Decimal   @default(0)
+  lineTotal       Decimal
+}
+
+model SalesReturn {
+  id                       String       @id @default(cuid())
+  businessId               String
+  salesReturnNo            String
+  sourceInvoiceId          String
+  customerId               String
+  returnDate               DateTime     @default(now())
+  returnMethod             ReturnMethod
+  subtotal                 Decimal
+  discountAmount           Decimal      @default(0)
+  taxAmount                Decimal      @default(0)
+  grandTotal               Decimal
+  cashRefundAmount         Decimal      @default(0)
+  exchangeAdjustmentAmount Decimal      @default(0)
+  createdBy                String
+  createdAt                DateTime     @default(now())
+}
+
+model SalesReturnLine {
+  id               String   @id @default(cuid())
+  salesReturnId    String
+  salesInvoiceLineId String
+  itemId           String
+  enteredQuantity  Decimal
+  unitType         UnitType
+  unitId           String
+  conversionFactor Decimal?
+  quantityPrimary  Decimal
+  unitPrice        Decimal
+  taxRate          Decimal   @default(0)
+  taxAmount        Decimal   @default(0)
+  lineTotal        Decimal
+  reason           String?
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  businessId    String
+  referenceType String
+  referenceId   String
+  method        PaymentMethod
+  amount        Decimal
+  referenceNo   String?
+  note          String?
+  createdBy     String
+  createdAt     DateTime      @default(now())
+}
+
+model Refund {
+  id            String        @id @default(cuid())
+  businessId    String
+  referenceType String
+  referenceId   String
+  method        PaymentMethod
+  amount        Decimal
+  referenceNo   String?
+  note          String?
+  createdBy     String
+  createdAt     DateTime      @default(now())
+}
+
+model LedgerEntry {
+  id           String   @id @default(cuid())
+  businessId   String
+  entryDate    DateTime @default(now())
+  accountType  String
+  accountId    String?
+  referenceType String
+  referenceId  String
+  debitAmount  Decimal  @default(0)
+  creditAmount Decimal  @default(0)
+  narration    String?
+}
+
+model BusinessSettings {
+  id                  String   @id @default(cuid())
+  businessId          String
+  invoiceTemplate     Json?
+  nonTaxTemplate      Json?
+  themeConfig         Json?
+  moduleToggles       Json?
+  paymentMethods      String[]
+  allowedDiscount     Decimal? @default(0)
+  productFieldConfig  Json?
+  customerFieldConfig Json?
+  supplierFieldConfig Json?
+  updatedBy           String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  business            Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id          String   @id @default(cuid())
+  userId      String
+  businessId  String
+  tokenId     String   @unique
+  isRevoked   Boolean  @default(false)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PasswordResetToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token      String   @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Expense {
+  id            String   @id @default(cuid())
+  businessId    String
+  expenseDate   DateTime @default(now())
+  category      String
+  paidTo        String?
+  amount        Decimal
+  paymentMethod String
+  note          String?
+  createdBy     String
+  createdAt     DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  businessId String
+  userId     String
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+}
