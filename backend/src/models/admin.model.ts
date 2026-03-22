@@ -6,12 +6,26 @@ export const roleSchema = z.object({
   permissions: z.array(z.string()).default([]),
 });
 
+export const roleUpdateSchema = z.object({
+  name: z.string().min(2).optional(),
+  description: z.string().optional(),
+  permissions: z.array(z.string()).optional(),
+});
+
 export const userSchema = z.object({
   fullName: z.string().min(2),
   email: z.string().email(),
   password: z.string().min(6),
   phone: z.string().optional(),
   roleId: z.string(),
+});
+
+export const userUpdateSchema = z.object({
+  fullName: z.string().min(2).optional(),
+  email: z.string().email().optional(),
+  password: z.string().min(6).optional(),
+  phone: z.string().optional(),
+  roleId: z.string().optional(),
 });
 
 export const unitSchema = z.object({
@@ -22,6 +36,28 @@ export const unitSchema = z.object({
 
 export const nameSchema = z.object({
   name: z.string().min(2),
+});
+
+export const categorySchema = z.object({
+  name: z.string().min(2),
+  description: z.string().optional(),
+  imageUrl: z.string().optional(),
+  subcategories: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        description: z.string().optional(),
+        imageUrl: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+
+export const subCategorySchema = z.object({
+  title: z.string().min(2),
+  description: z.string().optional(),
+  categoryId: z.string().optional(),
+  imageUrl: z.string().optional(),
 });
 
 export const taxRateSchema = z.object({
@@ -44,7 +80,7 @@ export const numberingSchema = z.object({
 export const paymentSchema = z.object({
   referenceType: z.string().min(2),
   referenceId: z.string().min(2),
-  method: z.enum(["CASH", "CARD", "BANK_TRANSFER", "WALLET", "CHEQUE"]),
+  method: z.enum(["CASH", "CARD", "BANK_TRANSFER", "WALLET", "CHEQUE", "STORE_CREDIT"]),
   amount: z.number().positive(),
   referenceNo: z.string().optional(),
   note: z.string().optional(),
@@ -59,10 +95,3 @@ export const refundSchema = z.object({
   note: z.string().optional(),
 });
 
-export const expenseSchema = z.object({
-  category: z.string().min(2),
-  paidTo: z.string().optional(),
-  amount: z.number().positive(),
-  paymentMethod: z.string().min(2),
-  note: z.string().optional(),
-});

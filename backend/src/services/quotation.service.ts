@@ -3,7 +3,7 @@ import { HttpError } from "../lib/http";
 import type { AuthUser } from "../middleware/auth";
 import { listQuerySchema } from "../models/common.model";
 import type { QuotationCreateInput } from "../models/quotation.model";
-import { toPrimaryQuantity } from "./stock.service";
+import { itemTracksInventory, toPrimaryQuantity, validateDocumentLineUnits } from "./stock.service";
 
 export async function listQuotations(auth: AuthUser, query: unknown) {
   const list = listQuerySchema.parse(query);
@@ -40,18 +40,20 @@ export async function createQuotation(auth: AuthUser, input: QuotationCreateInpu
 
   const rows = input.lines.map((line) => {
     const item = itemMap.get(line.itemId)!;
+    validateDocumentLineUnits(item, line, "QUOTATION");
     const quantityPrimary = toPrimaryQuantity({
       enteredQuantity: line.enteredQuantity,
       unitType: line.unitType,
       factor: item.secondaryToPrimaryFactor ? Number(item.secondaryToPrimaryFactor) : null,
     });
+    const effectiveTaxRate = !item.taxable ? 0 : line.taxRate;
     const preTax = line.enteredQuantity * line.unitPrice - line.discountAmount;
-    const lineTax = (preTax * line.taxRate) / 100;
+    const lineTax = (preTax * effectiveTaxRate) / 100;
     const lineTotal = preTax + lineTax;
     subtotal += preTax;
     taxAmount += lineTax;
     discountAmount += line.discountAmount;
-    return { line, item, quantityPrimary, lineTax, lineTotal };
+    return { line, item, quantityPrimary, lineTax, lineTotal, effectiveTaxRate };
   });
 
   return prisma.$transaction(async (tx) => {
@@ -80,7 +82,7 @@ export async function createQuotation(auth: AuthUser, input: QuotationCreateInpu
           unitPrice: row.line.unitPrice,
           priceSource: "MANUAL",
           discountAmount: row.line.discountAmount,
-          taxRate: row.line.taxRate,
+          taxRate: row.effectiveTaxRate,
           taxAmount: row.lineTax,
           lineTotal: row.lineTotal,
         },
@@ -132,12 +134,17 @@ export async function convertQuotationToInvoice(auth: AuthUser, quotationId: str
   const calculatedLines = lines.map((line) => {
     const item = itemMap.get(line.itemId);
     if (!item) throw new HttpError(404, `Item not found: ${line.itemId}`);
+    validateDocumentLineUnits(item, { unitType: line.unitType, unitId: line.unitId }, "QUOTATION");
     const quantityPrimary = toPrimaryQuantity({
       enteredQuantity: Number(line.enteredQuantity),
       unitType: line.unitType,
       factor: item.secondaryToPrimaryFactor ? Number(item.secondaryToPrimaryFactor) : null,
     });
-    if (!item.allowNegativeStock && Number(item.currentStockPrimary) < quantityPrimary) {
+    if (
+      itemTracksInventory(item) &&
+      !item.allowNegativeStock &&
+      Number(item.currentStockPrimary) < quantityPrimary
+    ) {
       throw new HttpError(400, `Insufficient stock for item ${item.name}`);
     }
     const preTax = Number(line.enteredQuantity) * Number(line.unitPrice) - Number(line.discountAmount);
@@ -188,30 +195,32 @@ export async function convertQuotationToInvoice(auth: AuthUser, quotationId: str
           lineTotal: row.lineTotal,
         },
       });
-      await tx.stockTransaction.create({
-        data: {
-          businessId: auth.businessId,
-          itemId: row.item.id,
-          transactionType: "SALE",
-          referenceType: "SALES_INVOICE",
-          referenceId: record.id,
-          quantityPrimaryIn: 0,
-          quantityPrimaryOut: row.quantityPrimary,
-          enteredQuantity: row.line.enteredQuantity,
-          enteredUnitType: row.line.unitType,
-          enteredUnitId: row.line.unitId,
-          conversionFactor:
-            row.line.unitType === "SECONDARY" && row.item.secondaryToPrimaryFactor
-              ? row.item.secondaryToPrimaryFactor
-              : null,
-          lineValue: row.lineTotal,
-          createdBy: auth.sub,
-        },
-      });
-      await tx.item.update({
-        where: { id: row.item.id },
-        data: { currentStockPrimary: { decrement: row.quantityPrimary } },
-      });
+      if (itemTracksInventory(row.item)) {
+        await tx.stockTransaction.create({
+          data: {
+            businessId: auth.businessId,
+            itemId: row.item.id,
+            transactionType: "SALE",
+            referenceType: "SALES_INVOICE",
+            referenceId: record.id,
+            quantityPrimaryIn: 0,
+            quantityPrimaryOut: row.quantityPrimary,
+            enteredQuantity: row.line.enteredQuantity,
+            enteredUnitType: row.line.unitType,
+            enteredUnitId: row.line.unitId,
+            conversionFactor:
+              row.line.unitType === "SECONDARY" && row.item.secondaryToPrimaryFactor
+                ? row.item.secondaryToPrimaryFactor
+                : null,
+            lineValue: row.lineTotal,
+            createdBy: auth.sub,
+          },
+        });
+        await tx.item.update({
+          where: { id: row.item.id },
+          data: { currentStockPrimary: { decrement: row.quantityPrimary } },
+        });
+      }
     }
     await tx.auditLog.create({
       data: {

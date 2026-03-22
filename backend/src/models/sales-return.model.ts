@@ -3,7 +3,8 @@ import { z } from "zod";
 export const salesReturnCreateSchema = z.object({
   sourceInvoiceId: z.string(),
   customerId: z.string(),
-  returnMethod: z.enum(["CASH_REFUND", "EXCHANGE"]),
+  /** Ignored — returns always credit the customer's store balance (no staff-facing refund vs exchange). */
+  returnMethod: z.enum(["CASH_REFUND", "EXCHANGE"]).optional(),
   lines: z
     .array(
       z.object({

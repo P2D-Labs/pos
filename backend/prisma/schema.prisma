@@ -51,6 +51,8 @@ enum PaymentMethod {
   BANK_TRANSFER
   WALLET
   CHEQUE
+  /** Customer store credit (e.g. from exchange returns), applied at checkout */
+  STORE_CREDIT
 }
 
 enum ReturnMethod {
@@ -78,8 +80,19 @@ model Business {
   ownerName           String?
   email               String?
   phone               String?
+  addressLine1        String?
+  addressLine2        String?
+  city                String?
+  state               String?
+  postalCode          String?
+  country             String?
+  taxRegistrationNo   String?
   currency            String   @default("LKR")
   timezone            String   @default("Asia/Colombo")
+  financialYearStart  String?
+  logoUrl             String?
+  signatureUrl        String?
+  receiptFooter       String?
   taxInvoicePrefix    String   @default("INV")
   nonTaxInvoicePrefix String   @default("NINV")
   taxOrderPrefix      String   @default("ORD")
@@ -98,6 +111,7 @@ model Business {
   brands              Brand[]
   taxRates            TaxRate[]
   items               Item[]
+  itemUnitConfigs     ItemUnitConfig[]
   settings            BusinessSettings[]
 }
 
@@ -132,12 +146,23 @@ model User {
 model Customer {
   id             String       @id @default(cuid())
   businessId     String
+  code           String?
   name           String
   customerType   CustomerType @default(REGULAR)
+  contactPerson  String?
   phone          String?
   email          String?
+  billingAddress String?
+  shippingAddress String?
+  taxNo          String?
+  creditLimit    Decimal?
+  paymentTermsDays Int?
+  openingBalance Decimal?
   currentBalance Decimal      @default(0)
+  /** Usable credit balance (e.g. exchange returns); applied at POS as STORE_CREDIT payments */
+  storeCreditBalance Decimal   @default(0)
   isActive       Boolean      @default(true)
+  notes          String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   business       Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -146,11 +171,18 @@ model Customer {
 model Supplier {
   id             String   @id @default(cuid())
   businessId     String
+  code           String?
   name           String
+  contactPerson  String?
   phone          String?
   email          String?
+  billingAddress String?
+  taxNo          String?
+  paymentTermsDays Int?
+  openingBalance Decimal?
   currentBalance Decimal  @default(0)
   isActive       Boolean  @default(true)
+  notes          String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -170,7 +202,18 @@ model Category {
   id         String   @id @default(cuid())
   businessId String
   name       String
+  description String?
+  imageUrl   String?
   business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+model SubCategory {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  description String?
+  categoryId String?
+  imageUrl   String?
 }
 
 model Brand {
@@ -200,7 +243,11 @@ model Item {
   sku                          String?
   barcode                      String?
   categoryId                   String?
+  subCategoryId                String?
+  subCategory                  String?
   brandId                      String?
+  description                  String?
+  imageUrl                     String?
   trackInventory               Boolean    @default(true)
   allowNegativeStock           Boolean    @default(false)
   primaryUnitId                String?
@@ -208,6 +255,7 @@ model Item {
   secondaryToPrimaryFactor     Decimal?
   allowSalesInSecondaryUnit    Boolean    @default(false)
   allowPurchaseInSecondaryUnit Boolean    @default(false)
+  allowSecondaryFraction       Boolean    @default(false)
   openingStockPrimary          Decimal?   @default(0)
   currentStockPrimary          Decimal    @default(0)
   reorderLevelPrimary          Decimal?
@@ -215,9 +263,27 @@ model Item {
   purchasePricePrimary         Decimal?
   taxable                      Boolean    @default(true)
   defaultTaxRateId             String?
+  notes                        String?
   createdAt                    DateTime   @default(now())
   updatedAt                    DateTime   @updatedAt
   business                     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  itemUnitConfig               ItemUnitConfig? @relation("ItemToUnitConfig")
+}
+
+model ItemUnitConfig {
+  id                           String   @id @default(cuid())
+  businessId                   String
+  itemId                       String?  @unique
+  primaryUnitId                String?
+  secondaryUnitId              String?
+  secondaryToPrimaryFactor     Decimal?
+  allowSalesInSecondaryUnit    Boolean  @default(false)
+  allowPurchaseInSecondaryUnit Boolean  @default(false)
+  allowSecondaryFraction       Boolean  @default(false)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  business                     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  item                         Item?    @relation("ItemToUnitConfig", fields: [itemId], references: [id])
 }
 
 model ItemPriceHistory {
@@ -261,6 +327,9 @@ model SalesInvoice {
   invoiceSeries   String
   documentTaxMode DocumentTaxMode
   customerId      String
+  /** When set, this invoice was issued together with a POS/till sales order (paired lifecycle). */
+  salesOrderId    String?         @unique
+  salesOrder      SalesOrder?     @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
   invoiceDate     DateTime        @default(now())
   subtotal        Decimal
   discountAmount  Decimal         @default(0)
@@ -301,8 +370,13 @@ model SalesOrder {
   discountAmount  Decimal         @default(0)
   taxAmount       Decimal         @default(0)
   grandTotal      Decimal
+  /** Sum of all payments recorded against this order (till + Payments screen) */
+  amountPaid      Decimal         @default(0)
+  /** Remaining to collect — grandTotal − amountPaid */
+  balanceDue      Decimal         @default(0)
   createdBy       String
   createdAt       DateTime        @default(now())
+  pairedInvoice   SalesInvoice?
 }
 
 model SalesOrderLine {
@@ -426,10 +500,14 @@ model Payment {
   referenceId   String
   method        PaymentMethod
   amount        Decimal
+  /** Groups all tender lines from one till / checkout action */
+  checkoutBatchId String?
   referenceNo   String?
   note          String?
   createdBy     String
   createdAt     DateTime      @default(now())
+
+  @@index([businessId, checkoutBatchId])
 }
 
 model Refund {
@@ -459,21 +537,25 @@ model LedgerEntry {
 }
 
 model BusinessSettings {
-  id                  String   @id @default(cuid())
-  businessId          String
-  invoiceTemplate     Json?
-  nonTaxTemplate      Json?
-  themeConfig         Json?
-  moduleToggles       Json?
-  paymentMethods      String[]
-  allowedDiscount     Decimal? @default(0)
-  productFieldConfig  Json?
-  customerFieldConfig Json?
-  supplierFieldConfig Json?
-  updatedBy           String
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  business            Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  id                    String   @id @default(cuid())
+  businessId            String
+  invoiceTemplate       Json?
+  nonTaxTemplate        Json?
+  themeConfig           Json?
+  moduleToggles         Json?
+  paymentMethods        String[]
+  allowedDiscount       Decimal? @default(0)
+  productFieldConfig    Json?
+  customerFieldConfig   Json?
+  supplierFieldConfig   Json?
+  /** Advisory text on quotation prints (e.g. validity note); no system enforcement */
+  quotationDisclaimer String?
+  /** Advisory text on sales return prints */
+  returnDisclaimer    String?
+  updatedBy             String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  business              Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 }
 
 model RefreshToken {
@@ -496,19 +578,6 @@ model PasswordResetToken {
   usedAt     DateTime?
   createdAt  DateTime @default(now())
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model Expense {
-  id            String   @id @default(cuid())
-  businessId    String
-  expenseDate   DateTime @default(now())
-  category      String
-  paidTo        String?
-  amount        Decimal
-  paymentMethod String
-  note          String?
-  createdBy     String
-  createdAt     DateTime @default(now())
 }
 
 model AuditLog {

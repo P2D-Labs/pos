@@ -2,13 +2,21 @@ import { prisma } from "../lib/prisma";
 import { HttpError } from "../lib/http";
 import type { AuthUser } from "../middleware/auth";
 import type { StockAdjustmentInput } from "../models/inventory.model";
-import { toPrimaryQuantity } from "./stock.service";
+import { itemTracksInventory, toPrimaryQuantity, validateDocumentLineUnits } from "./stock.service";
 
 export async function createStockAdjustment(auth: AuthUser, input: StockAdjustmentInput) {
   const item = await prisma.item.findFirst({
     where: { id: input.itemId, businessId: auth.businessId },
   });
   if (!item) throw new HttpError(404, "Item not found");
+  if (!itemTracksInventory(item)) {
+    throw new HttpError(400, "Stock adjustments apply only to items that track inventory");
+  }
+  validateDocumentLineUnits(
+    item,
+    { unitType: input.unitType, unitId: input.unitId },
+    "ADJUSTMENT",
+  );
 
   const quantityPrimary = toPrimaryQuantity({
     enteredQuantity: input.enteredQuantity,

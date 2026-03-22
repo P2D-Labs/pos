@@ -23,6 +23,8 @@ const ALL_PERMISSIONS = [
   "units.create",
   "categories.view",
   "categories.create",
+  "subcategories.view",
+  "subcategories.create",
   "brands.view",
   "brands.create",
   "taxRates.view",
@@ -37,29 +39,15 @@ const ALL_PERMISSIONS = [
   "returns.view",
   "returns.create",
   "reports.view",
-  "pricing.view",
-  "pricing.override",
   "inventory.view",
   "inventory.adjust",
   "payments.view",
   "payments.create",
   "refunds.view",
   "refunds.create",
-  "expenses.view",
-  "expenses.create",
   "ledger.view",
   "audit.view",
 ];
-
-async function upsertByName(model, businessId, names) {
-  const out = {};
-  for (const name of names) {
-    const existing = await model.findFirst({ where: { businessId, name } });
-    const row = existing ?? (await model.create({ data: { businessId, name } }));
-    out[name] = row;
-  }
-  return out;
-}
 
 async function main() {
   const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Admin@12345";
@@ -88,109 +76,38 @@ async function main() {
       },
     }));
 
-  const managerRole =
-    (await prisma.role.findFirst({ where: { businessId: business.id, name: "Manager" } })) ||
-    (await prisma.role.create({
-      data: {
-        businessId: business.id,
-        name: "Manager",
-        description: "Operations manager",
-        permissions: [
-          "business.view",
-          "settings.view",
-          "customers.view",
-          "customers.create",
-          "suppliers.view",
-          "suppliers.create",
-          "products.view",
-          "products.create",
-          "sales.view",
-          "sales.create",
-          "purchases.view",
-          "purchases.create",
-          "returns.view",
-          "returns.create",
-          "payments.view",
-          "payments.create",
-          "refunds.view",
-          "refunds.create",
-          "expenses.view",
-          "expenses.create",
-          "inventory.view",
-          "inventory.adjust",
-          "pricing.view",
-          "reports.view",
-        ],
-      },
-    }));
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || "admin@demo.local";
+  const adminPhone = process.env.SEED_ADMIN_PHONE || "0710000000";
+  const adminName = process.env.SEED_ADMIN_NAME || "Super Admin";
 
-  const cashierRole =
-    (await prisma.role.findFirst({ where: { businessId: business.id, name: "Cashier" } })) ||
-    (await prisma.role.create({
-      data: {
-        businessId: business.id,
-        name: "Cashier",
-        description: "Till and billing",
-        permissions: [
-          "business.view",
-          "customers.view",
-          "customers.create",
-          "products.view",
-          "sales.view",
-          "sales.create",
-          "returns.view",
-          "returns.create",
-          "payments.view",
-          "payments.create",
-          "pricing.view",
-        ],
-      },
-    }));
-
-  let adminUser = await prisma.user.findFirst({
-    where: { businessId: business.id, fullName: "Super Admin" },
+  const existingByEmail = await prisma.user.findFirst({
+    where: { businessId: business.id, email: adminEmail },
   });
-  if (!adminUser) {
+  const existingByPhone = await prisma.user.findFirst({
+    where: { businessId: business.id, phone: adminPhone },
+  });
+  let adminUser = existingByEmail ?? existingByPhone;
+  if (adminUser) {
+    adminUser = await prisma.user.update({
+      where: { id: adminUser.id },
+      data: {
+        fullName: adminName,
+        email: adminEmail || null,
+        phone: adminPhone,
+        passwordHash: adminHash,
+        roleId: superAdminRole.id,
+        isActive: true,
+      },
+    });
+  } else {
     adminUser = await prisma.user.create({
       data: {
         businessId: business.id,
-        fullName: "Super Admin",
-        email: process.env.SEED_ADMIN_EMAIL || null,
-        phone: process.env.SEED_ADMIN_PHONE || "0710000000",
+        fullName: adminName,
+        email: adminEmail || null,
+        phone: adminPhone,
         passwordHash: adminHash,
         roleId: superAdminRole.id,
-      },
-    });
-  }
-
-  const managerUser = await prisma.user.findFirst({
-    where: { businessId: business.id, fullName: "Store Manager" },
-  });
-  if (!managerUser) {
-    await prisma.user.create({
-      data: {
-        businessId: business.id,
-        fullName: "Store Manager",
-        email: null,
-        phone: "0710000001",
-        passwordHash: adminHash,
-        roleId: managerRole.id,
-      },
-    });
-  }
-
-  const cashierUser = await prisma.user.findFirst({
-    where: { businessId: business.id, fullName: "Main Cashier" },
-  });
-  if (!cashierUser) {
-    await prisma.user.create({
-      data: {
-        businessId: business.id,
-        fullName: "Main Cashier",
-        email: null,
-        phone: "0710000002",
-        passwordHash: adminHash,
-        roleId: cashierRole.id,
       },
     });
   }
@@ -206,12 +123,8 @@ async function main() {
         salesOrders: true,
         salesInvoices: true,
         purchases: true,
-        pricing: true,
         inventory: true,
         payments: true,
-        refunds: true,
-        expenses: true,
-        printCenter: true,
         salesReturns: true,
       },
       themeConfig: { primaryColor: "#f34e4e", radius: 12, fontFamily: "Inter" },
@@ -231,12 +144,8 @@ async function main() {
         salesOrders: true,
         salesInvoices: true,
         purchases: true,
-        pricing: true,
         inventory: true,
         payments: true,
-        refunds: true,
-        expenses: true,
-        printCenter: true,
         salesReturns: true,
       },
       themeConfig: { primaryColor: "#f34e4e", radius: 12, fontFamily: "Inter" },
@@ -247,103 +156,33 @@ async function main() {
     },
   });
 
-  const units = await upsertByName(prisma.unit, business.id, ["Piece", "Box", "Kg", "Litre"]);
-  const categories = await upsertByName(prisma.category, business.id, ["General", "Beverages", "Groceries"]);
-  const brands = await upsertByName(prisma.brand, business.id, ["Local", "Premium"]);
-
-  const vatRate =
-    (await prisma.taxRate.findFirst({ where: { businessId: business.id, name: "VAT 18%" } })) ||
-    (await prisma.taxRate.create({
-      data: { businessId: business.id, name: "VAT 18%", code: "VAT18", ratePercent: 18 },
-    }));
-
-  await upsertByName(prisma.customer, business.id, ["Walk-in Customer", "Retail Customer", "Wholesale Customer"]);
-  await upsertByName(prisma.supplier, business.id, ["Primary Supplier", "Backup Supplier"]);
-
-  const itemRows = [
-    {
-      name: "Sugar 1kg",
-      code: "ITM-SUGAR-1",
-      sku: "SKU-SUGAR-1",
-      barcode: "100000001",
-      categoryId: categories.Groceries.id,
-      brandId: brands.Local.id,
-      primaryUnitId: units.Kg.id,
-      salesPricePrimary: 260,
-      purchasePricePrimary: 220,
-      openingStockPrimary: 40,
-      currentStockPrimary: 40,
-      reorderLevelPrimary: 10,
-      taxable: true,
-      defaultTaxRateId: vatRate.id,
-    },
-    {
-      name: "Milk Pack",
-      code: "ITM-MILK-1",
-      sku: "SKU-MILK-1",
-      barcode: "100000002",
-      categoryId: categories.Beverages.id,
-      brandId: brands.Premium.id,
-      primaryUnitId: units.Piece.id,
-      salesPricePrimary: 180,
-      purchasePricePrimary: 150,
-      openingStockPrimary: 60,
-      currentStockPrimary: 60,
-      reorderLevelPrimary: 15,
-      taxable: true,
-      defaultTaxRateId: vatRate.id,
-    },
-    {
-      name: "Delivery Service",
-      code: "SRV-DEL-1",
-      sku: "SKU-SRV-DEL-1",
-      barcode: "200000001",
-      categoryId: categories.General.id,
-      brandId: brands.Local.id,
-      primaryUnitId: units.Piece.id,
-      salesPricePrimary: 500,
-      purchasePricePrimary: 0,
-      openingStockPrimary: 0,
-      currentStockPrimary: 0,
-      reorderLevelPrimary: 0,
-      taxable: false,
-      defaultTaxRateId: null,
-      type: "SERVICE",
-      trackInventory: false,
-    },
-  ];
-
-  for (const item of itemRows) {
-    const existing = await prisma.item.findFirst({
-      where: { businessId: business.id, code: item.code },
-    });
-    if (existing) continue;
-    await prisma.item.create({
-      data: {
-        businessId: business.id,
-        type: item.type || "PRODUCT",
-        name: item.name,
-        code: item.code,
-        sku: item.sku,
-        barcode: item.barcode,
-        categoryId: item.categoryId,
-        brandId: item.brandId,
-        trackInventory: item.trackInventory !== false,
-        primaryUnitId: item.primaryUnitId,
-        openingStockPrimary: item.openingStockPrimary,
-        currentStockPrimary: item.currentStockPrimary,
-        reorderLevelPrimary: item.reorderLevelPrimary,
-        salesPricePrimary: item.salesPricePrimary,
-        purchasePricePrimary: item.purchasePricePrimary,
-        taxable: item.taxable,
-        defaultTaxRateId: item.defaultTaxRateId,
-      },
-    });
+  try {
+    await prisma.$executeRawUnsafe(
+      `UPDATE "SalesOrder" SET "balanceDue" = "grandTotal" - "amountPaid"`,
+    );
+  } catch (e) {
+    console.warn("Sales order balance sync skipped:", e?.message ?? e);
   }
 
-  console.log("Seed completed.");
+  const walkIn = await prisma.customer.findFirst({
+    where: { businessId: business.id, customerType: "WALK_IN" },
+  });
+  if (!walkIn) {
+    await prisma.customer.create({
+      data: {
+        businessId: business.id,
+        name: "Walk-in Customer",
+        customerType: "WALK_IN",
+        isActive: true,
+      },
+    });
+    console.log("Walk-in customer created.");
+  }
+
+  console.log("Seed completed (super admin only).");
   console.log(`Business: ${business.name} (${business.id})`);
-  console.log(`Admin login email: ${process.env.SEED_ADMIN_EMAIL || "use /auth/setup email or phone-based user"}`);
+  console.log(`Admin login email: ${adminEmail}`);
+  console.log(`Admin login phone: ${adminPhone}`);
   console.log(`Admin password: ${adminPassword}`);
 }
 

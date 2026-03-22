@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/http";
+import { prisma } from "../lib/prisma";
 import { requireAuth, requirePermission } from "../middleware/auth";
 import {
   businessSetupSchema,
@@ -21,6 +22,48 @@ import {
 } from "../services/auth.service";
 
 export const authRoutes = Router();
+
+/** Categories for POS filters — any authenticated user. */
+authRoutes.get(
+  "/auth/categories",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.category.findMany({
+      where: { businessId: req.auth!.businessId },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    res.json({ success: true, data: rows });
+  }),
+);
+
+/** Units for POS labels — any authenticated user. */
+authRoutes.get(
+  "/auth/units",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.unit.findMany({
+      where: { businessId: req.auth!.businessId },
+      select: { id: true, name: true, symbol: true },
+      orderBy: { name: "asc" },
+    });
+    res.json({ success: true, data: rows });
+  }),
+);
+
+/** Active tax rates for POS line tax — any authenticated user. */
+authRoutes.get(
+  "/auth/tax-rates",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.taxRate.findMany({
+      where: { businessId: req.auth!.businessId, isActive: true },
+      select: { id: true, name: true, ratePercent: true },
+      orderBy: { name: "asc" },
+    });
+    res.json({ success: true, data: rows });
+  }),
+);
 
 authRoutes.post(
   "/auth/setup",

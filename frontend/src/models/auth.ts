@@ -6,6 +6,7 @@ export type AuthState = {
 
 const STORAGE_KEY = "pos-auth";
 
+/** Returns a new object on every call — do not use the whole value as a React effect dependency; use `accessToken` (or context) instead. */
 export function getAuthState(): AuthState | null {
   const raw = sessionStorage.getItem(STORAGE_KEY);
   return raw ? (JSON.parse(raw) as AuthState) : null;
@@ -20,7 +21,7 @@ export function setAuthState(auth: AuthState | null) {
 }
 
 export function buildAuthState(input: { accessToken: string; refreshToken: string }): AuthState {
-  const permissions = extractPermissionsFromToken(input.accessToken);
+  const { permissions } = extractAuthClaimsFromToken(input.accessToken);
   return {
     accessToken: input.accessToken,
     refreshToken: input.refreshToken,
@@ -28,17 +29,19 @@ export function buildAuthState(input: { accessToken: string; refreshToken: strin
   };
 }
 
-function extractPermissionsFromToken(token: string): string[] {
+function extractAuthClaimsFromToken(token: string): { permissions: string[] } {
   try {
     const payloadPart = token.split(".")[1];
-    if (!payloadPart) return [];
+    if (!payloadPart) return { permissions: [] };
     const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
     const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
     const decoded = JSON.parse(atob(padded)) as { permissions?: unknown };
-    return Array.isArray(decoded.permissions)
-      ? decoded.permissions.filter((item): item is string => typeof item === "string")
-      : [];
+    return {
+      permissions: Array.isArray(decoded.permissions)
+        ? decoded.permissions.filter((item): item is string => typeof item === "string")
+        : [],
+    };
   } catch {
-    return [];
+    return { permissions: [] };
   }
 }

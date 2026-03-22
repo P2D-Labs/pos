@@ -19,6 +19,8 @@ export async function updateCustomizationSettings(auth: AuthUser, input: {
   productFieldConfig?: unknown;
   customerFieldConfig?: unknown;
   supplierFieldConfig?: unknown;
+  quotationDisclaimer?: string | null;
+  returnDisclaimer?: string | null;
 }) {
   const settingsPayload = {
     invoiceTemplate: input.invoiceTemplate as Prisma.InputJsonValue | undefined,
@@ -30,6 +32,8 @@ export async function updateCustomizationSettings(auth: AuthUser, input: {
     productFieldConfig: input.productFieldConfig as Prisma.InputJsonValue | undefined,
     customerFieldConfig: input.customerFieldConfig as Prisma.InputJsonValue | undefined,
     supplierFieldConfig: input.supplierFieldConfig as Prisma.InputJsonValue | undefined,
+    quotationDisclaimer: input.quotationDisclaimer === undefined ? undefined : input.quotationDisclaimer,
+    returnDisclaimer: input.returnDisclaimer === undefined ? undefined : input.returnDisclaimer,
   };
 
   return prisma.businessSettings.upsert({

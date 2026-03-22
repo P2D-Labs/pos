@@ -12,6 +12,15 @@ function getPageParams(query: unknown) {
   };
 }
 
+function getReportPageParams(query: unknown) {
+  const input = listQuerySchema.parse(query);
+  return {
+    skip: (input.page - 1) * input.pageSize,
+    take: input.pageSize,
+    search: input.search,
+  };
+}
+
 function buildLast7DaysSalesTrend(rows: { invoiceDate: Date; grandTotal: unknown }[]) {
   const byDay = new Map<string, number>();
   for (const row of rows) {
@@ -29,7 +38,7 @@ function buildLast7DaysSalesTrend(rows: { invoiceDate: Date; grandTotal: unknown
   return out;
 }
 
-export async function getDashboardReport(auth: AuthUser) {
+export async function getDashboardReport(auth: AuthUser, query: unknown = {}) {
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
   const invoiceModeFilter = canViewNonTax ? {} : ({ documentTaxMode: "TAX" as const });
 
@@ -43,7 +52,6 @@ export async function getDashboardReport(auth: AuthUser) {
     suppliers,
     items,
     invoices,
-    expenses,
     lowStockCandidates,
     receivableAgg,
     payableAgg,
@@ -62,7 +70,6 @@ export async function getDashboardReport(auth: AuthUser) {
         ...invoiceModeFilter,
       },
     }),
-    prisma.expense.findMany({ where: { businessId: auth.businessId } }),
     prisma.item.findMany({
       where: { businessId: auth.businessId, reorderLevelPrimary: { not: null } },
       select: {
@@ -108,7 +115,6 @@ export async function getDashboardReport(auth: AuthUser) {
     items,
     invoices: invoices.length,
     salesTotal: invoices.reduce((sum, row) => sum + Number(row.grandTotal), 0),
-    expenseTotal: expenses.reduce((sum, row) => sum + Number(row.amount), 0),
     lowStockCount: lowStockItems.length,
     lowStockPreview: lowStockItems.slice(0, 5).map((row) => ({
       id: row.id,
@@ -123,7 +129,7 @@ export async function getDashboardReport(auth: AuthUser) {
 }
 
 export async function getTaxSalesReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   return prisma.salesInvoice.findMany({
     where: {
       businessId: auth.businessId,
@@ -142,7 +148,7 @@ export async function getTaxSalesReport(auth: AuthUser, query: unknown) {
 }
 
 export async function getNonTaxSalesReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   enforceNonTaxPermission(auth, "view");
   return prisma.salesInvoice.findMany({
     where: {
@@ -178,7 +184,7 @@ export async function getLowStockReport(auth: AuthUser) {
 }
 
 export async function getReceivablesReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
   return prisma.salesInvoice.findMany({
     where: {
@@ -199,7 +205,7 @@ export async function getReceivablesReport(auth: AuthUser, query: unknown) {
 }
 
 export async function getPayablesReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   return prisma.purchase.findMany({
     where: {
       businessId: auth.businessId,
@@ -218,7 +224,7 @@ export async function getPayablesReport(auth: AuthUser, query: unknown) {
 }
 
 export async function getSalesReturnsReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   return prisma.salesReturn.findMany({
     where: {
       businessId: auth.businessId,
@@ -236,7 +242,7 @@ export async function getSalesReturnsReport(auth: AuthUser, query: unknown) {
 }
 
 export async function getRefundsReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   return prisma.refund.findMany({
     where: {
       businessId: auth.businessId,
@@ -253,26 +259,8 @@ export async function getRefundsReport(auth: AuthUser, query: unknown) {
   });
 }
 
-export async function getExpensesReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
-  return prisma.expense.findMany({
-    where: {
-      businessId: auth.businessId,
-      OR: search
-        ? [
-            { category: { contains: search, mode: "insensitive" } },
-            { paidTo: { contains: search, mode: "insensitive" } },
-          ]
-        : undefined,
-    },
-    orderBy: { createdAt: "desc" },
-    skip,
-    take,
-  });
-}
-
 export async function getAuditReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   return prisma.auditLog.findMany({
     where: {
       businessId: auth.businessId,
@@ -290,7 +278,7 @@ export async function getAuditReport(auth: AuthUser, query: unknown) {
   });
 }
 
-export async function getSalesByItemReport(auth: AuthUser) {
+export async function getSalesByItemReport(auth: AuthUser, query: unknown = {}) {
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
   const lines = await prisma.salesInvoiceLine.findMany({ orderBy: { id: "desc" } });
   const scopedInvoices = await prisma.salesInvoice.findMany({
@@ -313,7 +301,7 @@ export async function getSalesByItemReport(auth: AuthUser) {
   return Array.from(summary.values());
 }
 
-export async function getSalesByCustomerReport(auth: AuthUser) {
+export async function getSalesByCustomerReport(auth: AuthUser, query: unknown = {}) {
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
   const invoices = await prisma.salesInvoice.findMany({
     where: {
@@ -333,7 +321,7 @@ export async function getSalesByCustomerReport(auth: AuthUser) {
   return Array.from(summary.values());
 }
 
-export async function getPurchasesBySupplierReport(auth: AuthUser) {
+export async function getPurchasesBySupplierReport(auth: AuthUser, query: unknown = {}) {
   const purchases = await prisma.purchase.findMany({
     where: { businessId: auth.businessId },
     orderBy: { createdAt: "desc" },
@@ -350,7 +338,7 @@ export async function getPurchasesBySupplierReport(auth: AuthUser) {
 }
 
 export async function getStockMovementReport(auth: AuthUser, query: unknown) {
-  const { skip, take, search } = getPageParams(query);
+  const { skip, take, search } = getReportPageParams(query);
   return prisma.stockTransaction.findMany({
     where: {
       businessId: auth.businessId,
@@ -368,12 +356,15 @@ export async function getStockMovementReport(auth: AuthUser, query: unknown) {
   });
 }
 
-export async function getQuotationConversionReport(auth: AuthUser) {
+export async function getQuotationConversionReport(auth: AuthUser, query: unknown = {}) {
   const quotationCount = await prisma.quotation.count({
     where: { businessId: auth.businessId },
   });
   const convertedCount = await prisma.auditLog.count({
-    where: { businessId: auth.businessId, action: "QUOTATION_CONVERT_TO_INVOICE" },
+    where: {
+      businessId: auth.businessId,
+      action: "QUOTATION_CONVERT_TO_INVOICE",
+    },
   });
   return {
     quotationCount,
@@ -383,7 +374,7 @@ export async function getQuotationConversionReport(auth: AuthUser) {
 }
 
 export async function getUserActivityReport(auth: AuthUser, query: unknown) {
-  const { skip, take } = getPageParams(query);
+  const { skip, take } = getReportPageParams(query);
   const rows = await prisma.auditLog.findMany({
     where: { businessId: auth.businessId },
     orderBy: { createdAt: "desc" },
@@ -401,7 +392,7 @@ export async function getUserActivityReport(auth: AuthUser, query: unknown) {
 }
 
 export async function getDailySalesReport(auth: AuthUser, query: unknown) {
-  const { skip, take } = getPageParams(query);
+  const { skip, take } = getReportPageParams(query);
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
   const invoices = await prisma.salesInvoice.findMany({
     where: {
@@ -423,7 +414,7 @@ export async function getDailySalesReport(auth: AuthUser, query: unknown) {
   return Array.from(summary.values());
 }
 
-export async function getProfitSummaryReport(auth: AuthUser) {
+export async function getProfitSummaryReport(auth: AuthUser, query: unknown = {}) {
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
   const invoices = await prisma.salesInvoice.findMany({
     where: {

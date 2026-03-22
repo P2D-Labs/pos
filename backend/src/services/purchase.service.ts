@@ -2,7 +2,7 @@ import { prisma } from "../lib/prisma";
 import type { AuthUser } from "../middleware/auth";
 import { listQuerySchema } from "../models/common.model";
 import type { PurchaseCreateInput } from "../models/purchase.model";
-import { toPrimaryQuantity } from "./stock.service";
+import { itemTracksInventory, toPrimaryQuantity, validateDocumentLineUnits } from "./stock.service";
 
 export async function listPurchases(auth: AuthUser, query: unknown) {
   const list = listQuerySchema.parse(query);
@@ -42,6 +42,7 @@ export async function createPurchase(auth: AuthUser, input: PurchaseCreateInput)
 
   const calculatedLines = input.lines.map((line) => {
     const item = itemMap.get(line.itemId)!;
+    validateDocumentLineUnits(item, line, "PURCHASE");
     const quantityPrimary = toPrimaryQuantity({
       enteredQuantity: line.enteredQuantity,
       unitType: line.unitType,
@@ -93,34 +94,50 @@ export async function createPurchase(auth: AuthUser, input: PurchaseCreateInput)
           lineTotal: row.lineTotal,
         },
       });
-
-      await tx.stockTransaction.create({
+      await tx.itemPriceHistory.create({
         data: {
           businessId: auth.businessId,
           itemId: row.item.id,
-          transactionType: "PURCHASE",
-          referenceType: "PURCHASE",
-          referenceId: purchase.id,
-          quantityPrimaryIn: row.quantityPrimary,
-          quantityPrimaryOut: 0,
-          enteredQuantity: row.line.enteredQuantity,
-          enteredUnitType: row.line.unitType,
-          enteredUnitId: row.line.unitId,
-          conversionFactor:
-            row.line.unitType === "SECONDARY" && row.item.secondaryToPrimaryFactor
-              ? row.item.secondaryToPrimaryFactor
-              : null,
-          unitCost: row.line.unitCost,
-          lineValue: row.lineTotal,
-          createdBy: auth.sub,
+          sourceType: "PURCHASE",
+          sourceId: purchase.id,
+          unitType: row.line.unitType,
+          unitId: row.line.unitId,
+          price: row.line.unitCost,
+          discountAmount: 0,
         },
       });
+
+      if (itemTracksInventory(row.item)) {
+        await tx.stockTransaction.create({
+          data: {
+            businessId: auth.businessId,
+            itemId: row.item.id,
+            transactionType: "PURCHASE",
+            referenceType: "PURCHASE",
+            referenceId: purchase.id,
+            quantityPrimaryIn: row.quantityPrimary,
+            quantityPrimaryOut: 0,
+            enteredQuantity: row.line.enteredQuantity,
+            enteredUnitType: row.line.unitType,
+            enteredUnitId: row.line.unitId,
+            conversionFactor:
+              row.line.unitType === "SECONDARY" && row.item.secondaryToPrimaryFactor
+                ? row.item.secondaryToPrimaryFactor
+                : null,
+            unitCost: row.line.unitCost,
+            lineValue: row.lineTotal,
+            createdBy: auth.sub,
+          },
+        });
+      }
 
       await tx.item.update({
         where: { id: row.item.id },
         data: {
-          currentStockPrimary: { increment: row.quantityPrimary },
           purchasePricePrimary: row.line.unitCost,
+          ...(itemTracksInventory(row.item)
+            ? { currentStockPrimary: { increment: row.quantityPrimary } }
+            : {}),
         },
       });
     }

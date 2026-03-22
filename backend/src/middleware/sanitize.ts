@@ -22,8 +22,10 @@ function sanitizeValue(value: unknown): unknown {
 }
 
 export function sanitizeRequestMiddleware(req: Request, _res: Response, next: NextFunction) {
+  // JSON bodies (login, etc.)
   req.body = sanitizeValue(req.body);
-  req.query = sanitizeValue(req.query) as Request["query"];
-  req.params = sanitizeValue(req.params) as Request["params"];
+  // Express 5: `req.query` is read-only (getter); assigning throws.
+  // This middleware runs before route matching, so `req.params` is not populated yet anyway.
+  // Add route-level sanitization if you need to strip HTML from query/path params.
   next();
 }

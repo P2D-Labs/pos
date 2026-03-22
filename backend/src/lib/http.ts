@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
+import { env } from "../config/env";
 
 export class HttpError extends Error {
   statusCode: number;
@@ -41,8 +42,15 @@ export function errorMiddleware(
     return;
   }
 
+  if (env.NODE_ENV !== "production") {
+    // eslint-disable-next-line no-console
+    console.error("[HTTP 500]", error.name, error.message, error.stack);
+  }
+
   res.status(500).json({
     success: false,
-    message: "Internal server error",
+    message:
+      env.NODE_ENV === "production" ? "Internal server error" : error.message || "Internal server error",
+    ...(env.NODE_ENV !== "production" && { name: error.name }),
   });
 }

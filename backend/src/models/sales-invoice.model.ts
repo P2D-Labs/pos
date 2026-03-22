@@ -1,4 +1,13 @@
 import { z } from "zod";
+import { listQuerySchema } from "./common.model";
+
+export const salesInvoiceListQuerySchema = listQuerySchema.extend({
+  customerId: z.string().optional(),
+  /** Only invoices with balance due > 0 */
+  openOnly: z.coerce.boolean().optional(),
+});
+
+export type SalesInvoiceListQuery = z.infer<typeof salesInvoiceListQuerySchema>;
 
 export const salesInvoiceCreateSchema = z.object({
   customerId: z.string(),
@@ -17,6 +26,7 @@ export const salesInvoiceCreateSchema = z.object({
     )
     .min(1),
   amountReceived: z.number().nonnegative().default(0),
+  paymentMethod: z.enum(["CASH", "CARD", "BANK_TRANSFER", "WALLET", "CHEQUE"]).optional().default("CASH"),
 });
 
 export type SalesInvoiceCreateInput = z.infer<typeof salesInvoiceCreateSchema>;

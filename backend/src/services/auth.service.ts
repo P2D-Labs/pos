@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { env } from "../config/env";
 import { HttpError } from "../lib/http";
 import { prisma } from "../lib/prisma";
+import { suggestedPermissionsSet } from "../constants/permissions";
 import type {
   BusinessSetupInput,
   ForgotPasswordInput,
@@ -43,22 +44,33 @@ export async function setupBusiness(input: BusinessSetupInput) {
   return { businessId: business.id, userId: user.id };
 }
 
+function normalizePermissions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((p): p is string => typeof p === "string");
+}
+
 export async function login(input: LoginInput) {
   const user = await prisma.user.findUnique({
     where: { email: input.email },
     include: { role: true },
   });
   if (!user || !user.isActive) throw new HttpError(401, "Invalid credentials");
+  if (!user.role) throw new HttpError(401, "Invalid credentials");
 
   const valid = await bcrypt.compare(input.password, user.passwordHash);
   if (!valid) throw new HttpError(401, "Invalid credentials");
 
   const tokenId = crypto.randomUUID();
+  const permissions = normalizePermissions(user.role.permissions);
+  const resolvedPermissions =
+    user.role.name === "Super Admin"
+      ? Array.from(new Set([...permissions, ...Array.from(suggestedPermissionsSet)]))
+      : permissions;
   const payload = {
     sub: user.id,
     businessId: user.businessId,
     roleId: user.roleId,
-    permissions: user.role.permissions,
+    permissions: resolvedPermissions,
     tokenId,
   };
 
@@ -103,11 +115,19 @@ export async function refresh(input: RefreshInput) {
   });
 
   const newTokenId = crypto.randomUUID();
+  if (!tokenRow.user.role) {
+    throw new HttpError(401, "Invalid refresh token");
+  }
+  const permissions = normalizePermissions(tokenRow.user.role.permissions);
+  const resolvedPermissions =
+    tokenRow.user.role.name === "Super Admin"
+      ? Array.from(new Set([...permissions, ...Array.from(suggestedPermissionsSet)]))
+      : permissions;
   const payload = {
     sub: tokenRow.user.id,
     businessId: tokenRow.user.businessId,
     roleId: tokenRow.user.roleId,
-    permissions: tokenRow.user.role.permissions,
+    permissions: resolvedPermissions,
     tokenId: newTokenId,
   };
 

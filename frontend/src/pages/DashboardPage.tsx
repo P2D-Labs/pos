@@ -1,8 +1,21 @@
 import axios from "axios";
+import {
+  ArrowDownAZ,
+  ArrowUpAZ,
+  ArrowRight,
+  BarChart3,
+  Package,
+  TrendingUp,
+  Wallet,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { PageHeader } from "../components/PageHeader";
+import { StatCards } from "../components/StatCards";
+import { SpinnerBlock } from "../components/ui/Spinner";
 import { getAuthState } from "../models/auth";
 import { api } from "../services/api";
+import { moduleConfigs } from "../services/module.service";
 
 type DashboardData = {
   business: { name: string; currency: string };
@@ -11,7 +24,6 @@ type DashboardData = {
   items: number;
   invoices: number;
   salesTotal: number;
-  expenseTotal: number;
   lowStockCount: number;
   lowStockPreview: Array<{
     id: string;
@@ -41,7 +53,8 @@ export function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [moduleToggles, setModuleToggles] = useState<Record<string, boolean> | null>(null);
   const [error, setError] = useState("");
-
+  const [stockSortBy, setStockSortBy] = useState<"item" | "stock" | "reorder">("stock");
+  const [stockSortDir, setStockSortDir] = useState<"asc" | "desc">("asc");
   useEffect(() => {
     async function load() {
       if (!auth) return;
@@ -65,7 +78,7 @@ export function DashboardPage() {
       }
     }
     void load();
-  }, [auth]);
+  }, [auth?.accessToken]);
 
   const fmtMoney = useMemo(() => {
     const currency = data?.business.currency ?? "LKR";
@@ -74,6 +87,28 @@ export function DashboardPage() {
   }, [data?.business.currency]);
 
   const maxTrend = useMemo(() => Math.max(1, ...(data?.salesTrend.map((t) => t.total) ?? [1])), [data?.salesTrend]);
+  const sortedLowStock = useMemo(() => {
+    const rows = [...(data?.lowStockPreview ?? [])];
+    rows.sort((a, b) => {
+      const dir = stockSortDir === "asc" ? 1 : -1;
+      const stockA = Number(a.currentStockPrimary ?? 0);
+      const stockB = Number(b.currentStockPrimary ?? 0);
+      const reorderA = Number(a.reorderLevelPrimary ?? 0);
+      const reorderB = Number(b.reorderLevelPrimary ?? 0);
+      if (stockSortBy === "item") return a.name.localeCompare(b.name) * dir;
+      if (stockSortBy === "reorder") return (reorderA - reorderB) * dir;
+      return (stockA - stockB) * dir;
+    });
+    return rows;
+  }, [data?.lowStockPreview, stockSortBy, stockSortDir]);
+
+  function toggleStockSort(next: "item" | "stock" | "reorder") {
+    if (stockSortBy === next) setStockSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    else {
+      setStockSortBy(next);
+      setStockSortDir(next === "item" ? "asc" : "desc");
+    }
+  }
 
   const quickActions = useMemo(() => {
     const isOn = (path: string) => {
@@ -81,23 +116,35 @@ export function DashboardPage() {
       if (!key || !moduleToggles) return true;
       return moduleToggles[key] !== false;
     };
-    const canPrintCenter =
-      hasPermission(permissions, "sales.view") ||
-      hasPermission(permissions, "returns.view") ||
-      hasPermission(permissions, "purchases.view");
-    const rows: { label: string; path: string; allowed: boolean }[] = [
-      { label: "POS / Till", path: "/pos", allowed: hasPermission(permissions, "sales.view") },
-      { label: "Quotations", path: "/quotations", allowed: hasPermission(permissions, "sales.view") },
-      { label: "Sales invoices", path: "/sales-invoices", allowed: hasPermission(permissions, "sales.view") },
-      { label: "Purchases", path: "/purchases", allowed: hasPermission(permissions, "purchases.view") },
-      { label: "Sales returns", path: "/sales-returns", allowed: hasPermission(permissions, "returns.view") },
-      { label: "Payments", path: "/payments", allowed: hasPermission(permissions, "payments.view") },
-      { label: "Refunds", path: "/refunds", allowed: hasPermission(permissions, "refunds.view") },
-      { label: "Expenses", path: "/expenses", allowed: hasPermission(permissions, "expenses.view") },
-      { label: "Reports", path: "/reports", allowed: hasPermission(permissions, "reports.view") },
-      { label: "Print center", path: "/print-center", allowed: canPrintCenter },
-      { label: "Settings", path: "/settings", allowed: hasPermission(permissions, "settings.view") },
-    ];
+    const quickActionPaths = new Set([
+      "/pos",
+      "/sales-invoices",
+      "/quotations",
+      "/sales-orders",
+      "/purchases",
+      "/sales-returns",
+      "/payments",
+      "/inventory",
+      "/reports",
+      "/roles",
+      "/users",
+      "/settings",
+    ]);
+    const rows = moduleConfigs
+      .filter((m) => quickActionPaths.has(m.path))
+      .map((m) => {
+        let allowed = true;
+        if (m.path === "/purchases") allowed = hasPermission(permissions, "purchases.view");
+        else if (m.path === "/sales-returns") allowed = hasPermission(permissions, "returns.view");
+        else if (m.path === "/payments") allowed = hasPermission(permissions, "payments.view");
+        else if (m.path === "/inventory") allowed = hasPermission(permissions, "inventory.view");
+        else if (m.path === "/reports") allowed = hasPermission(permissions, "reports.view");
+        else if (m.path === "/settings") allowed = hasPermission(permissions, "settings.view");
+        else if (m.path === "/roles") allowed = hasPermission(permissions, "roles.view");
+        else if (m.path === "/users") allowed = hasPermission(permissions, "users.view");
+        else allowed = hasPermission(permissions, "sales.view");
+        return { label: m.title, path: m.path, allowed };
+      });
     return rows.filter((r) => r.allowed && isOn(r.path));
   }, [moduleToggles, permissions]);
 
@@ -105,64 +152,31 @@ export function DashboardPage() {
 
   return (
     <main className="content">
-      <header className="content-header">
-        <div>
-          <h1>Dashboard</h1>
-          <p>
-            {data?.business.name ? `${data.business.name} · ` : null}
-            KPIs and quick actions
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Dashboard"
+        subtitle={
+          data?.business.name ? `${data.business.name} · KPIs and quick actions` : "KPIs and quick actions"
+        }
+      />
 
-      {error ? <p className="pad">{error}</p> : null}
+      {error ? <p className="alert alert-error">{error}</p> : null}
 
       {data ? (
         <>
-          <section className="cards">
-            <div className="card">
-              <span>Sales total (all time)</span>
-              <strong>{fmtMoney(data.salesTotal)}</strong>
-            </div>
-            <div className="card">
-              <span>Invoices</span>
-              <strong>{data.invoices}</strong>
-            </div>
-            <div className="card">
-              <span>Expenses (all time)</span>
-              <strong>{fmtMoney(data.expenseTotal)}</strong>
-            </div>
-            <div className="card">
-              <span>Outstanding receivables</span>
-              <strong>{fmtMoney(data.outstandingReceivables)}</strong>
-            </div>
-            <div className="card">
-              <span>Outstanding payables</span>
-              <strong>{fmtMoney(data.outstandingPayables)}</strong>
-            </div>
-            <div className="card">
-              <span>Low stock SKUs</span>
-              <strong>{data.lowStockCount}</strong>
-            </div>
-            <div className="card">
-              <span>Customers</span>
-              <strong>{data.customers}</strong>
-            </div>
-            <div className="card">
-              <span>Suppliers</span>
-              <strong>{data.suppliers}</strong>
-            </div>
-            <div className="card">
-              <span>Items</span>
-              <strong>{data.items}</strong>
-            </div>
-          </section>
+          <StatCards
+            items={[
+              { label: "Sales total", value: fmtMoney(data.salesTotal), icon: TrendingUp, tone: "blue" },
+              { label: "Invoices", value: data.invoices, icon: BarChart3, tone: "green" },
+              { label: "Receivables", value: fmtMoney(data.outstandingReceivables), icon: Wallet, tone: "purple" },
+              { label: "Low stock SKUs", value: data.lowStockCount, icon: Package, tone: "orange" },
+            ]}
+          />
 
-          <section className="panel pad" style={{ marginTop: 14 }}>
-            <h3>Sales trend (last 7 days)</h3>
-            <p style={{ color: "var(--muted)", fontSize: 13 }}>
-              Respects tax / non-tax visibility for your role (same as reports).
-            </p>
+          <section className="panel panel--pad panel-section-top">
+            <h3 className="section-title">
+              Sales trend (last 7 days)
+            </h3>
+            <p className="page-desc">Respects tax visibility for your role.</p>
             <div className="trend-bars">
               {data.salesTrend.map((row) => (
                 <div key={row.date} className="trend-bar-wrap">
@@ -177,48 +191,70 @@ export function DashboardPage() {
             </div>
           </section>
 
-          <section className="panel pad" style={{ marginTop: 14 }}>
-            <h3>Low stock preview</h3>
+          <section className="panel panel--pad panel-section-top">
+            <h3 className="section-title">
+              Low stock preview
+            </h3>
             {data.lowStockPreview.length === 0 ? (
-              <p style={{ color: "var(--muted)" }}>No low-stock items.</p>
+              <p className="page-desc">No low-stock items.</p>
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Item</th>
-                    <th>Stock</th>
-                    <th>Reorder</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.lowStockPreview.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.name}</td>
-                      <td>{String(row.currentStockPrimary)}</td>
-                      <td>{String(row.reorderLevelPrimary ?? "—")}</td>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>
+                        <button type="button" className={`th-sort${stockSortBy === "item" ? " is-active" : ""}`} onClick={() => toggleStockSort("item")}>
+                          ITEM
+                          {stockSortDir === "asc" && stockSortBy === "item" ? <ArrowUpAZ size={14} /> : <ArrowDownAZ size={14} />}
+                        </button>
+                      </th>
+                      <th>
+                        <button type="button" className={`th-sort${stockSortBy === "stock" ? " is-active" : ""}`} onClick={() => toggleStockSort("stock")}>
+                          STOCK
+                          {stockSortDir === "asc" && stockSortBy === "stock" ? <ArrowUpAZ size={14} /> : <ArrowDownAZ size={14} />}
+                        </button>
+                      </th>
+                      <th>
+                        <button type="button" className={`th-sort${stockSortBy === "reorder" ? " is-active" : ""}`} onClick={() => toggleStockSort("reorder")}>
+                          REORDER
+                          {stockSortDir === "asc" && stockSortBy === "reorder" ? <ArrowUpAZ size={14} /> : <ArrowDownAZ size={14} />}
+                        </button>
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {sortedLowStock.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.name}</td>
+                        <td>{String(row.currentStockPrimary)}</td>
+                        <td>{String(row.reorderLevelPrimary ?? "—")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
 
-          <section className="panel pad" style={{ marginTop: 14 }}>
-            <h3>Quick actions</h3>
+          <section className="panel panel--pad panel-section-top">
+            <h3 className="section-title">
+              Quick actions
+            </h3>
             <div className="quick-actions">
               {quickActions.map((a) => (
                 <button key={a.path} type="button" className="primary-btn" onClick={() => navigate(a.path)}>
                   {a.label}
+                  <ArrowRight size={16} />
                 </button>
               ))}
             </div>
             {quickActions.length === 0 ? (
-              <p style={{ color: "var(--muted)" }}>No actions available for your role or disabled modules.</p>
+              <p className="page-desc">No actions available for your role or disabled modules.</p>
             ) : null}
           </section>
         </>
       ) : !error ? (
-        <p className="pad">Loading…</p>
+        <SpinnerBlock label="Loading dashboard" />
       ) : null}
     </main>
   );

@@ -28,12 +28,42 @@ function formatDate(value: Date) {
   return value.toISOString().replace("T", " ").slice(0, 19);
 }
 
-function templateFooterText(template: unknown, fallback = "Thank you for your business.") {
+function templateFooterText(template: unknown, businessReceiptFooter?: string | null, fallback = "Thank you for your business.") {
   if (template && typeof template === "object" && !Array.isArray(template)) {
     const footerText = (template as Record<string, unknown>).footerText;
     if (typeof footerText === "string" && footerText.trim()) return footerText.trim();
   }
+  if (typeof businessReceiptFooter === "string" && businessReceiptFooter.trim()) return businessReceiptFooter.trim();
   return fallback;
+}
+
+function businessHeaderLines(business: {
+  name?: string | null;
+  legalName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+  taxRegistrationNo?: string | null;
+  currency?: string | null;
+  timezone?: string | null;
+}) {
+  const lines: string[] = [];
+  if (business.legalName && business.legalName !== business.name) lines.push(`Legal: ${business.legalName}`);
+  if (business.email) lines.push(`Email: ${business.email}`);
+  if (business.phone) lines.push(`Phone: ${business.phone}`);
+  const addressParts = [business.addressLine1, business.addressLine2, business.city, business.state, business.postalCode, business.country]
+    .filter((v) => typeof v === "string" && v.trim())
+    .map((v) => String(v).trim());
+  if (addressParts.length) lines.push(`Address: ${addressParts.join(", ")}`);
+  if (business.taxRegistrationNo) lines.push(`Tax No: ${business.taxRegistrationNo}`);
+  if (business.currency) lines.push(`Currency: ${business.currency}`);
+  if (business.timezone) lines.push(`Timezone: ${business.timezone}`);
+  return lines;
 }
 
 async function loadItemUnitMaps(businessId: string, itemIds: string[], unitIds: string[]) {
@@ -150,6 +180,7 @@ export async function printSalesInvoice(auth: AuthUser, id: string) {
   ]);
   const footer = templateFooterText(
     invoice.documentTaxMode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate,
+    business?.receiptFooter,
   );
   const unitRows = await prisma.unit.findMany({
     where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.unitId))] } },
@@ -161,9 +192,11 @@ export async function printSalesInvoice(auth: AuthUser, id: string) {
   });
   const unitMap = new Map(unitRows.map((unit) => [unit.id, unit.symbol]));
   const itemMap = new Map(itemRows.map((item) => [item.id, item.name]));
+  const businessLines = businessHeaderLines(business ?? {});
   return `
     <html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;">
       <h2>${escapeHtml(business?.name ?? "Business")} - ${invoice.documentTaxMode === "TAX" ? "Tax Invoice" : "Non-Tax Invoice"}</h2>
+      ${businessLines.map((line) => `<p style="margin:2px 0;">${escapeHtml(line)}</p>`).join("")}
       <p><strong>Document:</strong> ${escapeHtml(invoice.invoiceNo)} | <strong>Date:</strong> ${escapeHtml(formatDate(invoice.invoiceDate))}</p>
       <p><strong>Customer:</strong> ${escapeHtml(customer?.name ?? invoice.customerId)} | <strong>Served by:</strong> ${escapeHtml(cashier?.fullName ?? invoice.createdBy)}</p>
       <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;">
@@ -200,6 +233,7 @@ export async function generateThermalReceipt(auth: AuthUser, id: string) {
   ]);
   const footer = templateFooterText(
     invoice.documentTaxMode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate,
+    business?.receiptFooter,
   );
   const unitRows = await prisma.unit.findMany({
     where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.unitId))] } },
@@ -211,9 +245,11 @@ export async function generateThermalReceipt(auth: AuthUser, id: string) {
   });
   const unitMap = new Map(unitRows.map((unit) => [unit.id, unit.symbol]));
   const itemMap = new Map(itemRows.map((item) => [item.id, item.name]));
+  const businessLines = businessHeaderLines(business ?? {});
   return `
     <html><body style="width:280px;font-family:Arial,sans-serif;">
       <h3 style="margin:0 0 8px;">${escapeHtml(business?.name ?? "Business")}</h3>
+      ${businessLines.map((line) => `<div style="font-size:11px;">${escapeHtml(line)}</div>`).join("")}
       <div><strong>${invoice.documentTaxMode === "TAX" ? "Tax" : "Non-Tax"} Receipt</strong></div>
       <div>Invoice: ${escapeHtml(invoice.invoiceNo)}</div>
       <div>Date: ${escapeHtml(formatDate(invoice.invoiceDate))}</div>
@@ -244,6 +280,125 @@ export async function generateThermalReceipt(auth: AuthUser, id: string) {
   `;
 }
 
+/** Till/POS: receipt from sales order (paired document; stock may post via invoice in other flows). */
+export async function generateSalesOrderThermalReceipt(auth: AuthUser, id: string) {
+  const order = await prisma.salesOrder.findFirst({
+    where: { id, businessId: auth.businessId },
+  });
+  if (!order) throw new HttpError(404, "Sales order not found");
+  if (order.documentTaxMode === "NON_TAX") enforceNonTaxPermission(auth, "print");
+  const lines = await prisma.salesOrderLine.findMany({ where: { salesOrderId: order.id } });
+  const [business, customer, cashier, settings] = await Promise.all([
+    prisma.business.findUnique({ where: { id: auth.businessId } }),
+    prisma.customer.findFirst({ where: { id: order.customerId, businessId: auth.businessId } }),
+    prisma.user.findFirst({ where: { id: order.createdBy, businessId: auth.businessId } }),
+    prisma.businessSettings.findUnique({ where: { id: `${auth.businessId}-settings` } }),
+  ]);
+  const footer = templateFooterText(
+    order.documentTaxMode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate,
+    business?.receiptFooter,
+  );
+  const unitRows = await prisma.unit.findMany({
+    where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.unitId))] } },
+    select: { id: true, symbol: true },
+  });
+  const itemRows = await prisma.item.findMany({
+    where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.itemId))] } },
+    select: { id: true, name: true },
+  });
+  const unitMap = new Map(unitRows.map((unit) => [unit.id, unit.symbol]));
+  const itemMap = new Map(itemRows.map((item) => [item.id, item.name]));
+  const businessLines = businessHeaderLines(business ?? {});
+  return `
+    <html><body style="width:280px;font-family:Arial,sans-serif;">
+      <h3 style="margin:0 0 8px;">${escapeHtml(business?.name ?? "Business")}</h3>
+      ${businessLines.map((line) => `<div style="font-size:11px;">${escapeHtml(line)}</div>`).join("")}
+      <div><strong>${order.documentTaxMode === "TAX" ? "Tax" : "Non-Tax"} Till receipt</strong></div>
+      <div>Order: ${escapeHtml(order.orderNo)}</div>
+      <div>Date: ${escapeHtml(formatDate(order.orderDate))}</div>
+      <div>Customer: ${escapeHtml(customer?.name ?? order.customerId)}</div>
+      <div>Served by: ${escapeHtml(cashier?.fullName ?? order.createdBy)}</div>
+      <hr />
+      ${lines
+        .map(
+          (line) => `
+        <div style="display:flex;justify-content:space-between;">
+          <span>${escapeHtml(itemMap.get(line.itemId) ?? line.itemId)} x ${escapeHtml(line.enteredQuantity)} ${escapeHtml(unitMap.get(line.unitId) ?? "")}</span>
+          <span>${escapeHtml(line.lineTotal)}</span>
+        </div>`,
+        )
+        .join("")}
+      <hr />
+      <div style="display:flex;justify-content:space-between;"><span>Subtotal</span><span>${escapeHtml(order.subtotal)}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>Discount</span><span>${escapeHtml(order.discountAmount)}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>Tax</span><span>${escapeHtml(order.taxAmount)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:bold;">
+        <span>TOTAL</span><span>${escapeHtml(order.grandTotal)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;"><span>Paid on order</span><span>${escapeHtml(order.amountPaid)}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>Balance due</span><span>${escapeHtml(order.balanceDue)}</span></div>
+      <hr />
+      <div style="font-size:11px;text-align:center;">${escapeHtml(footer)}</div>
+    </body></html>
+  `;
+}
+
+export async function generateSalesOrderA4Html(auth: AuthUser, id: string) {
+  const order = await prisma.salesOrder.findFirst({
+    where: { id, businessId: auth.businessId },
+  });
+  if (!order) throw new HttpError(404, "Sales order not found");
+  if (order.documentTaxMode === "NON_TAX") enforceNonTaxPermission(auth, "print");
+  const lines = await prisma.salesOrderLine.findMany({ where: { salesOrderId: order.id } });
+  const [business, customer, cashier, settings] = await Promise.all([
+    prisma.business.findUnique({ where: { id: auth.businessId } }),
+    prisma.customer.findFirst({ where: { id: order.customerId, businessId: auth.businessId } }),
+    prisma.user.findFirst({ where: { id: order.createdBy, businessId: auth.businessId } }),
+    prisma.businessSettings.findUnique({ where: { id: `${auth.businessId}-settings` } }),
+  ]);
+  const footer = templateFooterText(
+    order.documentTaxMode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate,
+    business?.receiptFooter,
+  );
+  const unitRows = await prisma.unit.findMany({
+    where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.unitId))] } },
+    select: { id: true, symbol: true },
+  });
+  const itemRows = await prisma.item.findMany({
+    where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.itemId))] } },
+    select: { id: true, name: true },
+  });
+  const unitMap = new Map(unitRows.map((unit) => [unit.id, unit.symbol]));
+  const itemMap = new Map(itemRows.map((item) => [item.id, item.name]));
+  const businessLines = businessHeaderLines(business ?? {});
+  const modeLabel = order.documentTaxMode === "TAX" ? "TAX SALES ORDER (A4)" : "NON-TAX SALES ORDER (A4)";
+  return `
+    <html><body style="font-family:Arial,sans-serif;">
+      <h1>${escapeHtml(business?.name ?? "Business")} - ${modeLabel}</h1>
+      ${businessLines.map((line) => `<p style="margin:2px 0;">${escapeHtml(line)}</p>`).join("")}
+      <p>Order: ${escapeHtml(order.orderNo)}</p>
+      <p>Date: ${escapeHtml(formatDate(order.orderDate))}</p>
+      <p>Customer: ${escapeHtml(customer?.name ?? order.customerId)}</p>
+      <p>Served by: ${escapeHtml(cashier?.fullName ?? order.createdBy)}</p>
+      <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;">
+        <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Tax</th><th>Total</th></tr></thead>
+        <tbody>
+          ${lines
+            .map(
+              (line) =>
+                `<tr><td>${escapeHtml(itemMap.get(line.itemId) ?? line.itemId)}</td><td>${escapeHtml(line.enteredQuantity)}</td><td>${escapeHtml(unitMap.get(line.unitId) ?? line.unitId)}</td><td>${escapeHtml(line.unitPrice)}</td><td>${escapeHtml(line.taxAmount)}</td><td>${escapeHtml(line.lineTotal)}</td></tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <p><strong>Subtotal:</strong> ${escapeHtml(order.subtotal)} | <strong>Discount:</strong> ${escapeHtml(order.discountAmount)} | <strong>Tax:</strong> ${escapeHtml(order.taxAmount)}</p>
+      <h3 style="text-align:right;">Grand Total: ${escapeHtml(order.grandTotal)}</h3>
+      <p style="text-align:right;">Paid: ${escapeHtml(order.amountPaid)} | Balance due: ${escapeHtml(order.balanceDue)}</p>
+      <p style="margin-top:16px;">${escapeHtml(footer)}</p>
+    </body></html>
+  `;
+}
+
 export async function generateInvoicePdfHtml(auth: AuthUser, id: string, mode: "TAX" | "NON_TAX") {
   const invoice = await prisma.salesInvoice.findFirst({
     where: { id, businessId: auth.businessId, documentTaxMode: mode },
@@ -257,7 +412,7 @@ export async function generateInvoicePdfHtml(auth: AuthUser, id: string, mode: "
     prisma.user.findFirst({ where: { id: invoice.createdBy, businessId: auth.businessId } }),
     prisma.businessSettings.findUnique({ where: { id: `${auth.businessId}-settings` } }),
   ]);
-  const footer = templateFooterText(mode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate);
+  const footer = templateFooterText(mode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate, business?.receiptFooter);
   const unitRows = await prisma.unit.findMany({
     where: { businessId: auth.businessId, id: { in: [...new Set(lines.map((line) => line.unitId))] } },
     select: { id: true, symbol: true },
@@ -268,9 +423,11 @@ export async function generateInvoicePdfHtml(auth: AuthUser, id: string, mode: "
   });
   const unitMap = new Map(unitRows.map((unit) => [unit.id, unit.symbol]));
   const itemMap = new Map(itemRows.map((item) => [item.id, item.name]));
+  const businessLines = businessHeaderLines(business ?? {});
   return `
     <html><body style="font-family:Arial,sans-serif;">
       <h1>${escapeHtml(business?.name ?? "Business")} - ${mode === "TAX" ? "TAX INVOICE (A4)" : "NON-TAX INVOICE (A4)"}</h1>
+      ${businessLines.map((line) => `<p style="margin:2px 0;">${escapeHtml(line)}</p>`).join("")}
       <p>Invoice: ${escapeHtml(invoice.invoiceNo)}</p>
       <p>Date: ${escapeHtml(formatDate(invoice.invoiceDate))}</p>
       <p>Customer: ${escapeHtml(customer?.name ?? invoice.customerId)}</p>
@@ -312,11 +469,16 @@ export async function generateInvoicePdf(auth: AuthUser, id: string, mode: "TAX"
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(mode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate);
+  const footer = templateFooterText(mode === "NON_TAX" ? settings?.nonTaxTemplate : settings?.invoiceTemplate, business?.receiptFooter);
   return buildPdfBuffer(
     mode === "TAX" ? "Tax Invoice (A4)" : "Non-Tax Invoice (A4)",
     [
       { label: "Business", value: business?.name ?? "" },
+      { label: "Legal", value: business?.legalName ?? "" },
+      { label: "Email", value: business?.email ?? "" },
+      { label: "Phone", value: business?.phone ?? "" },
+      { label: "Currency", value: business?.currency ?? "" },
+      { label: "Timezone", value: business?.timezone ?? "" },
       { label: "Invoice", value: invoice.invoiceNo },
       { label: "Mode", value: invoice.documentTaxMode },
       { label: "Date", value: formatDate(invoice.invoiceDate) },
@@ -368,14 +530,20 @@ export async function printSalesReturn(auth: AuthUser, id: string) {
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(settings?.invoiceTemplate, "Thank you.");
+  const footer = templateFooterText(settings?.invoiceTemplate, business?.receiptFooter, "Thank you.");
+  const disclaimer =
+    settings && typeof (settings as { returnDisclaimer?: string }).returnDisclaimer === "string"
+      ? String((settings as { returnDisclaimer?: string }).returnDisclaimer).trim()
+      : "";
+  const businessLines = businessHeaderLines(business ?? {});
   return `
     <html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;">
       <h2>${escapeHtml(business?.name ?? "Business")} - Sales Return</h2>
+      ${businessLines.map((line) => `<p style="margin:2px 0;">${escapeHtml(line)}</p>`).join("")}
       <p><strong>Return:</strong> ${escapeHtml(salesReturn.salesReturnNo)} | <strong>Date:</strong> ${escapeHtml(formatDate(salesReturn.returnDate))}</p>
       <p><strong>Source invoice:</strong> ${escapeHtml(sourceInvoice?.invoiceNo ?? salesReturn.sourceInvoiceId)}</p>
       <p><strong>Customer:</strong> ${escapeHtml(customer?.name ?? salesReturn.customerId)} | <strong>Handled by:</strong> ${escapeHtml(cashier?.fullName ?? salesReturn.createdBy)}</p>
-      <p><strong>Method:</strong> ${escapeHtml(salesReturn.returnMethod)} | <strong>Cash refund:</strong> ${escapeHtml(salesReturn.cashRefundAmount)} | <strong>Exchange adj.:</strong> ${escapeHtml(salesReturn.exchangeAdjustmentAmount)}</p>
+      <p><strong>Credit to customer account:</strong> ${escapeHtml(salesReturn.grandTotal)}</p>
       <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;">
         <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Tax</th><th>Total</th><th>Reason</th></tr></thead>
         <tbody>
@@ -391,6 +559,7 @@ export async function printSalesReturn(auth: AuthUser, id: string) {
       <p><strong>Subtotal:</strong> ${escapeHtml(salesReturn.subtotal)} | <strong>Discount:</strong> ${escapeHtml(salesReturn.discountAmount)} | <strong>Tax:</strong> ${escapeHtml(salesReturn.taxAmount)}</p>
       <p><strong>Grand Total:</strong> ${escapeHtml(salesReturn.grandTotal)}</p>
       <p>${escapeHtml(footer)}</p>
+      ${disclaimer ? `<p style="margin-top:12px;font-size:12px;">${escapeHtml(disclaimer)}</p>` : ""}
     </body></html>
   `;
 }
@@ -418,11 +587,21 @@ export async function generateSalesReturnPdf(auth: AuthUser, id: string) {
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(settings?.invoiceTemplate, "Thank you.");
+  const footer = templateFooterText(settings?.invoiceTemplate, business?.receiptFooter, "Thank you.");
+  const disclaimer =
+    settings && typeof (settings as { returnDisclaimer?: string }).returnDisclaimer === "string"
+      ? String((settings as { returnDisclaimer?: string }).returnDisclaimer).trim()
+      : "";
+  const footerWithNote = disclaimer ? `${footer}\n${disclaimer}` : footer;
   return buildPdfBuffer(
     "Sales Return (A4)",
     [
       { label: "Business", value: business?.name ?? "" },
+      { label: "Legal", value: business?.legalName ?? "" },
+      { label: "Email", value: business?.email ?? "" },
+      { label: "Phone", value: business?.phone ?? "" },
+      { label: "Currency", value: business?.currency ?? "" },
+      { label: "Timezone", value: business?.timezone ?? "" },
       { label: "Return", value: salesReturn.salesReturnNo },
       { label: "Date", value: formatDate(salesReturn.returnDate) },
       { label: "Source invoice", value: sourceInvoice?.invoiceNo ?? salesReturn.sourceInvoiceId },
@@ -446,12 +625,8 @@ export async function generateSalesReturnPdf(auth: AuthUser, id: string) {
       discount: String(salesReturn.discountAmount),
       tax: String(salesReturn.taxAmount),
       grandTotal: String(salesReturn.grandTotal),
-      afterGrandTotal: [
-        { label: "Return method", value: String(salesReturn.returnMethod) },
-        { label: "Cash refund", value: String(salesReturn.cashRefundAmount) },
-        { label: "Exchange adjustment", value: String(salesReturn.exchangeAdjustmentAmount) },
-      ],
-      footer,
+      afterGrandTotal: [{ label: "Credit to customer account", value: String(salesReturn.grandTotal) }],
+      footer: footerWithNote,
     },
   );
 }
@@ -473,10 +648,16 @@ export async function printQuotation(auth: AuthUser, id: string) {
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(settings?.invoiceTemplate);
+  const footer = templateFooterText(settings?.invoiceTemplate, business?.receiptFooter);
+  const disclaimer =
+    settings && typeof (settings as { quotationDisclaimer?: string }).quotationDisclaimer === "string"
+      ? String((settings as { quotationDisclaimer?: string }).quotationDisclaimer).trim()
+      : "";
+  const businessLines = businessHeaderLines(business ?? {});
   return `
     <html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;">
       <h2>${escapeHtml(business?.name ?? "Business")} - Quotation</h2>
+      ${businessLines.map((line) => `<p style="margin:2px 0;">${escapeHtml(line)}</p>`).join("")}
       <p><strong>Quotation:</strong> ${escapeHtml(quotation.quotationNo)} | <strong>Date:</strong> ${escapeHtml(formatDate(quotation.quotationDate))}</p>
       <p><strong>Customer:</strong> ${escapeHtml(customer?.name ?? quotation.customerId)} | <strong>Prepared by:</strong> ${escapeHtml(author?.fullName ?? quotation.createdBy)}</p>
       <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;">
@@ -494,6 +675,7 @@ export async function printQuotation(auth: AuthUser, id: string) {
       <p><strong>Subtotal:</strong> ${escapeHtml(quotation.subtotal)} | <strong>Discount:</strong> ${escapeHtml(quotation.discountAmount)} | <strong>Tax:</strong> ${escapeHtml(quotation.taxAmount)}</p>
       <p><strong>Grand Total:</strong> ${escapeHtml(quotation.grandTotal)}</p>
       <p>${escapeHtml(footer)}</p>
+      ${disclaimer ? `<p style="margin-top:12px;font-size:12px;">${escapeHtml(disclaimer)}</p>` : ""}
     </body></html>
   `;
 }
@@ -515,11 +697,21 @@ export async function generateQuotationPdf(auth: AuthUser, id: string) {
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(settings?.invoiceTemplate);
+  const footer = templateFooterText(settings?.invoiceTemplate, business?.receiptFooter);
+  const disclaimer =
+    settings && typeof (settings as { quotationDisclaimer?: string }).quotationDisclaimer === "string"
+      ? String((settings as { quotationDisclaimer?: string }).quotationDisclaimer).trim()
+      : "";
+  const footerWithNote = disclaimer ? `${footer}\n${disclaimer}` : footer;
   return buildPdfBuffer(
     "Quotation (A4)",
     [
       { label: "Business", value: business?.name ?? "" },
+      { label: "Legal", value: business?.legalName ?? "" },
+      { label: "Email", value: business?.email ?? "" },
+      { label: "Phone", value: business?.phone ?? "" },
+      { label: "Currency", value: business?.currency ?? "" },
+      { label: "Timezone", value: business?.timezone ?? "" },
       { label: "Quotation", value: quotation.quotationNo },
       { label: "Date", value: formatDate(quotation.quotationDate) },
       { label: "Customer", value: customer?.name ?? quotation.customerId },
@@ -538,7 +730,7 @@ export async function generateQuotationPdf(auth: AuthUser, id: string) {
       discount: String(quotation.discountAmount),
       tax: String(quotation.taxAmount),
       grandTotal: String(quotation.grandTotal),
-      footer,
+      footer: footerWithNote,
     },
   );
 }
@@ -560,10 +752,12 @@ export async function printPurchase(auth: AuthUser, id: string) {
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(settings?.invoiceTemplate, "Thank you.");
+  const footer = templateFooterText(settings?.invoiceTemplate, business?.receiptFooter, "Thank you.");
+  const businessLines = businessHeaderLines(business ?? {});
   return `
     <html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;">
       <h2>${escapeHtml(business?.name ?? "Business")} - Purchase</h2>
+      ${businessLines.map((line) => `<p style="margin:2px 0;">${escapeHtml(line)}</p>`).join("")}
       <p><strong>Purchase:</strong> ${escapeHtml(purchase.purchaseNo)} | <strong>Date:</strong> ${escapeHtml(formatDate(purchase.purchaseDate))}</p>
       <p><strong>Supplier:</strong> ${escapeHtml(supplier?.name ?? purchase.supplierId)} | <strong>Recorded by:</strong> ${escapeHtml(author?.fullName ?? purchase.createdBy)}</p>
       <table border="1" cellspacing="0" cellpadding="6" style="width:100%;border-collapse:collapse;">
@@ -602,11 +796,16 @@ export async function generatePurchasePdf(auth: AuthUser, id: string) {
       lines.map((l) => l.unitId),
     ),
   ]);
-  const footer = templateFooterText(settings?.invoiceTemplate, "Thank you.");
+  const footer = templateFooterText(settings?.invoiceTemplate, business?.receiptFooter, "Thank you.");
   return buildPdfBuffer(
     "Purchase (A4)",
     [
       { label: "Business", value: business?.name ?? "" },
+      { label: "Legal", value: business?.legalName ?? "" },
+      { label: "Email", value: business?.email ?? "" },
+      { label: "Phone", value: business?.phone ?? "" },
+      { label: "Currency", value: business?.currency ?? "" },
+      { label: "Timezone", value: business?.timezone ?? "" },
       { label: "Purchase", value: purchase.purchaseNo },
       { label: "Date", value: formatDate(purchase.purchaseDate) },
       { label: "Supplier", value: supplier?.name ?? purchase.supplierId },
@@ -639,7 +838,6 @@ export async function reprintSearch(auth: AuthUser, query: unknown) {
   const skip = (input.page - 1) * input.pageSize;
   const take = input.pageSize;
   const canViewNonTax = hasPermission(auth, "sales.non_tax.view");
-
   const conditions: Prisma.SalesInvoiceWhereInput[] = [{ businessId: auth.businessId }];
 
   if (!canViewNonTax) {

@@ -3,7 +3,7 @@ import { HttpError } from "../lib/http";
 import type { AuthUser } from "../middleware/auth";
 import { listQuerySchema } from "../models/common.model";
 import type { SalesReturnCreateInput } from "../models/sales-return.model";
-import { toPrimaryQuantity } from "./stock.service";
+import { itemTracksInventory, toPrimaryQuantity } from "./stock.service";
 
 export async function listSalesReturns(auth: AuthUser, query: unknown) {
   const list = listQuerySchema.parse(query);
@@ -45,8 +45,15 @@ export async function createSalesReturn(auth: AuthUser, input: SalesReturnCreate
     where: { id: input.sourceInvoiceId, businessId: auth.businessId },
   });
   if (!invoice) throw new HttpError(404, "Source invoice not found");
+  if (invoice.customerId !== input.customerId) {
+    throw new HttpError(400, "Customer does not match the source invoice");
+  }
 
   const invoiceLineIds = input.lines.map((line) => line.salesInvoiceLineId);
+  if (new Set(invoiceLineIds).size !== invoiceLineIds.length) {
+    throw new HttpError(400, "Duplicate invoice line in return — each line may appear only once");
+  }
+
   const invoiceLines = await prisma.salesInvoiceLine.findMany({
     where: { salesInvoiceId: invoice.id, id: { in: invoiceLineIds } },
   });
@@ -103,8 +110,17 @@ export async function createSalesReturn(auth: AuthUser, input: SalesReturnCreate
   }
 
   const grandTotal = subtotal + totalTax;
-  const cashRefundAmount = input.returnMethod === "CASH_REFUND" ? grandTotal : 0;
-  const exchangeAdjustmentAmount = input.returnMethod === "EXCHANGE" ? grandTotal : 0;
+  /** Single path: credit customer store balance (no cash-out at return time). */
+  const returnMethod = "EXCHANGE" as const;
+  const cashRefundAmount = 0;
+  const exchangeAdjustmentAmount = grandTotal;
+
+  const returnItemIds = [...new Set(calculatedLines.map((r) => r.sourceLine.itemId))];
+  const returnItems = await prisma.item.findMany({
+    where: { businessId: auth.businessId, id: { in: returnItemIds } },
+    select: { id: true, trackInventory: true },
+  });
+  const trackByItemId = new Map(returnItems.map((i) => [i.id, i.trackInventory]));
 
   return prisma.$transaction(async (tx) => {
     const salesReturn = await tx.salesReturn.create({
@@ -113,7 +129,7 @@ export async function createSalesReturn(auth: AuthUser, input: SalesReturnCreate
         salesReturnNo,
         sourceInvoiceId: invoice.id,
         customerId: input.customerId,
-        returnMethod: input.returnMethod,
+        returnMethod,
         subtotal,
         discountAmount: 0,
         taxAmount: totalTax,
@@ -143,53 +159,30 @@ export async function createSalesReturn(auth: AuthUser, input: SalesReturnCreate
         },
       });
 
-      await tx.stockTransaction.create({
-        data: {
-          businessId: auth.businessId,
-          itemId: row.sourceLine.itemId,
-          transactionType: "SALE_RETURN",
-          referenceType: "SALES_RETURN",
-          referenceId: salesReturn.id,
-          quantityPrimaryIn: row.quantityPrimary,
-          quantityPrimaryOut: 0,
-          enteredQuantity: row.enteredQuantity,
-          enteredUnitType: row.sourceLine.unitType,
-          enteredUnitId: row.sourceLine.unitId,
-          conversionFactor: row.sourceLine.conversionFactor,
-          lineValue: row.lineTotal,
-          createdBy: auth.sub,
-        },
-      });
+      if (itemTracksInventory({ trackInventory: trackByItemId.get(row.sourceLine.itemId) })) {
+        await tx.stockTransaction.create({
+          data: {
+            businessId: auth.businessId,
+            itemId: row.sourceLine.itemId,
+            transactionType: "SALE_RETURN",
+            referenceType: "SALES_RETURN",
+            referenceId: salesReturn.id,
+            quantityPrimaryIn: row.quantityPrimary,
+            quantityPrimaryOut: 0,
+            enteredQuantity: row.enteredQuantity,
+            enteredUnitType: row.sourceLine.unitType,
+            enteredUnitId: row.sourceLine.unitId,
+            conversionFactor: row.sourceLine.conversionFactor,
+            lineValue: row.lineTotal,
+            createdBy: auth.sub,
+          },
+        });
 
-      await tx.item.update({
-        where: { id: row.sourceLine.itemId },
-        data: { currentStockPrimary: { increment: row.quantityPrimary } },
-      });
-    }
-
-    if (input.returnMethod === "CASH_REFUND" && cashRefundAmount > 0) {
-      await tx.payment.create({
-        data: {
-          businessId: auth.businessId,
-          referenceType: "SALES_RETURN_REFUND",
-          referenceId: salesReturn.id,
-          method: "CASH",
-          amount: cashRefundAmount,
-          createdBy: auth.sub,
-        },
-      });
-      await tx.ledgerEntry.create({
-        data: {
-          businessId: auth.businessId,
-          accountType: "REFUND",
-          accountId: input.customerId,
-          referenceType: "SALES_RETURN_REFUND",
-          referenceId: salesReturn.id,
-          debitAmount: cashRefundAmount,
-          creditAmount: 0,
-          narration: `Cash refund for ${salesReturn.salesReturnNo}`,
-        },
-      });
+        await tx.item.update({
+          where: { id: row.sourceLine.itemId },
+          data: { currentStockPrimary: { increment: row.quantityPrimary } },
+        });
+      }
     }
 
     await tx.ledgerEntry.create({
@@ -204,6 +197,13 @@ export async function createSalesReturn(auth: AuthUser, input: SalesReturnCreate
         narration: `Sales return ${salesReturn.salesReturnNo}`,
       },
     });
+
+    if (grandTotal > 0) {
+      await tx.customer.update({
+        where: { id: input.customerId, businessId: auth.businessId },
+        data: { storeCreditBalance: { increment: grandTotal } },
+      });
+    }
 
     return salesReturn;
   });
